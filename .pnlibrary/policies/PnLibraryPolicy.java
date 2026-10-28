@@ -15,7 +15,6 @@ public final class PnLibraryPolicy implements RemotePolicy {
                 .reason("Исправлена критическая ошибка") // причины
                 .step("Скачайте новую версию")           // раздел «Что делать»
                 .step("Перезапустите сервер")
-                .link("Скачать", "https://github.com/pnFolder/pnLibrary/releases/latest") // раздел «Ссылки»
                 .build();
     }
 }
