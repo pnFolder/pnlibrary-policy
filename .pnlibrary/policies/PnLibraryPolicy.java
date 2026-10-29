@@ -8,13 +8,6 @@ public final class PnLibraryPolicy implements RemotePolicy {
 
     @Override
     public RemotePolicyResult check(RemotePolicyContext context) {
-        return RemotePolicyResult.denying("Эта версия больше не поддерживается")
-                .status("устарела")                      // вместо «не поддерживается»
-                .headline("нужно обновление")            // строка под маской
-                .detail("Минимальная версия", "0.0.2")   // строки в блоке с версией
-                .reason("Исправлена критическая ошибка") // причины
-                .step("Скачайте новую версию")           // раздел «Что делать»
-                .step("Перезапустите сервер")
-                .build();
+        return RemotePolicyResult.allow();
     }
 }
