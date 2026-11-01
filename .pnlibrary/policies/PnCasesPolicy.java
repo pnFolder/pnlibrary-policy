@@ -1,5 +1,6 @@
 package pnfolder.policy;
 
+import java.util.Collections;
 import java.util.Set;
 import org.pnfolder.pnlibrary.api.remote.RemotePolicy;
 import org.pnfolder.pnlibrary.api.remote.RemotePolicyContext;
@@ -9,7 +10,7 @@ import org.pnfolder.pnlibrary.api.remote.RemotePolicyResult;
 public final class PnCasesPolicy implements RemotePolicy {
 
     /** Версии с серьёзной ошибкой. Добавьте сюда версию, и плагин этой версии не запустится. */
-    private static final Set<String> BLOCKED = Set.of();
+    private static final Set<String> BLOCKED = Collections.emptySet();
 
     @Override
     public RemotePolicyResult check(RemotePolicyContext context) {
