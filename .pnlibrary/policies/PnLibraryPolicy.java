@@ -11,17 +11,19 @@ import org.pnfolder.pnlibrary.api.remote.RemotePolicyResult;
 
 /**
  * Политика самой pnLibrary. Всегда разрешает работу, а заодно сообщает о переезде поддержки на новый Discord-сервер:
- * рамкой в консоли и сообщением администраторам при входе на Bukkit-сервер.
+ * красной рамкой в консоли (в начале запуска, посередине и после запуска сервера) и красным сообщением администраторам
+ * через несколько секунд после входа на Bukkit-сервер.
  *
  * Код политики исполняется на сервере, как код плагина. Bukkit используется только через рефлексию, чтобы политика
- * компилировалась на любом сервере; всё, что нужно слушателю после проверки, загружается заранее.
+ * компилировалась на любом сервере. Всё, что выполняется после проверки, лежит в отдельных классах, которые
+ * загружаются заранее: загрузчик политики закрывается сразу после проверки.
  */
 public final class PnLibraryPolicy implements RemotePolicy {
 
     /** Новый сервер поддержки. */
     private static final String DISCORD = "https://discord.gg/jqRFJC6WDM";
 
-    /** Рамка для консоли. Одна строка массива: одна строка лога. */
+    /** Рамка для консоли. Один элемент массива: одна строка лога. */
     private static final String[] CONSOLE = {
         "========================================================",
         " pnLibrary: мы переехали на новый Discord-сервер",
@@ -34,21 +36,21 @@ public final class PnLibraryPolicy implements RemotePolicy {
         "========================================================",
     };
 
+    /** Когда печатать рамку, в тиках от проверки (20 тиков = 1 секунда): сразу, посередине запуска и после него. */
+    private static final long[] CONSOLE_DELAYS_TICKS = {0L, 140L, 300L};
+
     /** Сообщение администратору при входе на сервер (цвета через §, красное). */
     private static final String ADMIN_MESSAGE =
         "§c§l[pnLibrary] §cМы переехали на новый Discord-сервер: §e" + DISCORD
             + " §c(старый больше не поддерживается)";
 
-    /** Сколько раз подряд печатать рамку в консоли, чтобы её было трудно не заметить. */
-    private static final int CONSOLE_COPIES = 3;
-
-    /** Через сколько тиков после входа показать сообщение администратору (20 тиков = 1 секунда). */
+    /** Через сколько тиков после входа показать сообщение администратору. */
     private static final long ADMIN_DELAY_TICKS = 60L;
 
     /** Право, по которому игрок считается администратором. Операторы видят сообщение всегда. */
     private static final String ADMIN_PERMISSION = "pnlibrary.admin";
 
-    /** Через сколько часов повторять рамку в консоли. 0 — только один раз при запуске сервера. */
+    /** Через сколько часов повторять всю серию рамок в консоли. 0 — только один раз при запуске сервера. */
     private static final int CONSOLE_REPEAT_HOURS = 0;
 
     private static final String SHOWN_PROPERTY = "pnlibrary.policy.moveNotice.shownAt";
@@ -57,15 +59,16 @@ public final class PnLibraryPolicy implements RemotePolicy {
     @Override
     public RemotePolicyResult check(RemotePolicyContext context) {
         try {
-            printConsoleNotice(context);
-            if (context.getPlatform().getType() == PlatformType.BUKKIT) hookAdminJoin(context);
+            Plan plan = new Plan(context);
+            scheduleConsoleNotice(plan);
+            if (context.getPlatform().getType() == PlatformType.BUKKIT) hookAdminJoin(plan);
         } catch (Throwable ignored) {
             // Объявление не должно мешать проверке: плагин работает в любом случае.
         }
         return RemotePolicyResult.allow();
     }
 
-    private static void printConsoleNotice(RemotePolicyContext context) {
+    private static void scheduleConsoleNotice(Plan plan) {
         long now = System.currentTimeMillis();
         String shown = System.getProperty(SHOWN_PROPERTY);
         if (shown != null) {
@@ -73,58 +76,53 @@ public final class PnLibraryPolicy implements RemotePolicy {
             if (interval <= 0 || now - Long.parseLong(shown) < interval) return;
         }
         System.setProperty(SHOWN_PROPERTY, Long.toString(now));
-        Object console = bukkitConsole(context);
-        Logger logger = Logger.getLogger("pnLibrary");
-        for (int copy = 0; copy < CONSOLE_COPIES; copy++) {
-            for (String line : CONSOLE) {
-                if (console != null) sendToConsole(console, "§c" + line);
-                else logger.info(line);
+        new Notice(plan).toString();
+        new Later(null, 0L).toString();
+        for (long delay : CONSOLE_DELAYS_TICKS) {
+            Notice notice = new Notice(plan);
+            if (delay <= 0L) notice.run();
+            else runLater(plan, notice, delay);
+        }
+    }
+
+    /**
+     * Запускает задачу позже: планировщиком Bukkit, а если его нет (Velocity, BungeeCord, Folia), потоком с паузой.
+     */
+    private static void runLater(Plan plan, Runnable task, long ticks) {
+        if (plan.bukkitClass != null) {
+            try {
+                Object scheduler = plan.bukkitClass.getMethod("getScheduler").invoke(null);
+                Method run = scheduler.getClass().getMethod("runTaskLater", plan.pluginType, Runnable.class, long.class);
+                run.invoke(scheduler, plan.plugin, task, ticks);
+                return;
+            } catch (Throwable unavailable) {
+                // Нет планировщика Bukkit (Folia): ниже запасной вариант.
             }
         }
-    }
-
-    /** Консоль Bukkit, если это Bukkit-сервер: через неё цвета § показываются красным. Иначе null. */
-    private static Object bukkitConsole(RemotePolicyContext context) {
-        try {
-            if (context.getPlatform().getType() != PlatformType.BUKKIT) return null;
-            Object plugin = context.nativeHandle(Object.class);
-            Class<?> bukkit = Class.forName("org.bukkit.Bukkit", true, plugin.getClass().getClassLoader());
-            return bukkit.getMethod("getConsoleSender").invoke(null);
-        } catch (Throwable unavailable) {
-            return null;
-        }
-    }
-
-    private static void sendToConsole(Object console, String line) {
-        try {
-            console.getClass().getMethod("sendMessage", String.class).invoke(console, line);
-        } catch (Throwable ignored) {
-            // Не вышло через консоль Bukkit: строку не показываем, плагин работает дальше.
-        }
+        Thread thread = new Thread(new Later(task, ticks * 50L), "pnlibrary-notice");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     /** Один раз за запуск сервера подписывается на вход игрока; повторные проверки ничего не добавляют. */
-    private static void hookAdminJoin(RemotePolicyContext context) throws Exception {
-        if (System.getProperty(HOOK_PROPERTY) != null) return;
-        Object plugin = context.nativeHandle(Object.class);
-        if (plugin == null) return;
-        ClassLoader loader = plugin.getClass().getClassLoader();
+    private static void hookAdminJoin(Plan plan) throws Exception {
+        if (System.getProperty(HOOK_PROPERTY) != null || plan.plugin == null || plan.pluginType == null) return;
+        ClassLoader loader = plan.loader;
         Class<?> listener = Class.forName("org.bukkit.event.Listener", true, loader);
         Class<?> executor = Class.forName("org.bukkit.plugin.EventExecutor", true, loader);
         Class<?> event = Class.forName("org.bukkit.event.player.PlayerJoinEvent", true, loader);
         Class<?> priority = Class.forName("org.bukkit.event.EventPriority", true, loader);
-        Class<?> pluginType = Class.forName("org.bukkit.plugin.Plugin", true, loader);
         Class<?> pluginManagerType = Class.forName("org.bukkit.plugin.PluginManager", true, loader);
-        Object manager = context.nativeHandle(pluginManagerType);
+        Object manager = plan.context.nativeHandle(pluginManagerType);
         if (manager == null) return;
 
-        JoinHandler handler = new JoinHandler(plugin, pluginType, loader);
+        JoinHandler handler = new JoinHandler(plan);
         handler.warmUp();
         Object listenerProxy = Proxy.newProxyInstance(loader, new Class<?>[] {listener}, handler);
         Object executorProxy = Proxy.newProxyInstance(loader, new Class<?>[] {executor}, handler);
         Method register = pluginManagerType.getMethod("registerEvent",
-            Class.class, listener, priority, executor, pluginType);
-        register.invoke(manager, event, listenerProxy, enumConstant(priority, "NORMAL"), executorProxy, plugin);
+            Class.class, listener, priority, executor, plan.pluginType);
+        register.invoke(manager, event, listenerProxy, enumConstant(priority, "NORMAL"), executorProxy, plan.plugin);
         System.setProperty(HOOK_PROPERTY, "true");
     }
 
@@ -135,33 +133,93 @@ public final class PnLibraryPolicy implements RemotePolicy {
         throw new IllegalStateException(name);
     }
 
-    /**
-     * Слушатель входа. Живёт дольше проверки, поэтому не использует лямбды и вложенные классы, которые подгружались бы
-     * из уже закрытого загрузчика политики: всё нужное загружает warmUp().
-     */
+    /** Всё, что нужно после проверки: плагин, классы Bukkit и контекст. */
+    private static final class Plan {
+        final RemotePolicyContext context;
+        final Object plugin;
+        final ClassLoader loader;
+        Class<?> pluginType;
+        Class<?> bukkitClass;
+
+        Plan(RemotePolicyContext context) {
+            this.context = context;
+            boolean bukkit = context.getPlatform().getType() == PlatformType.BUKKIT;
+            this.plugin = bukkit ? context.nativeHandle(Object.class) : null;
+            this.loader = plugin == null ? PnLibraryPolicy.class.getClassLoader() : plugin.getClass().getClassLoader();
+            if (plugin != null) {
+                try {
+                    pluginType = Class.forName("org.bukkit.plugin.Plugin", true, loader);
+                    bukkitClass = Class.forName("org.bukkit.Bukkit", true, loader);
+                } catch (Throwable unavailable) {
+                    pluginType = null;
+                    bukkitClass = null;
+                }
+            }
+        }
+    }
+
+    /** Одна печать рамки. На Bukkit идёт через консоль, где цвета показываются красным; иначе обычным логом. */
+    private static final class Notice implements Runnable {
+        private final Plan plan;
+
+        Notice(Plan plan) {
+            this.plan = plan;
+        }
+
+        @Override
+        public void run() {
+            try {
+                Object console = plan.bukkitClass == null ? null : plan.bukkitClass.getMethod("getConsoleSender").invoke(null);
+                Method send = console == null ? null : console.getClass().getMethod("sendMessage", String.class);
+                Logger logger = Logger.getLogger("pnLibrary");
+                for (String line : CONSOLE) {
+                    if (send != null) send.invoke(console, "§c" + line);
+                    else logger.info(line);
+                }
+            } catch (Throwable ignored) {
+                // Не вышло напечатать: плагин работает дальше.
+            }
+        }
+    }
+
+    /** Запасной вариант отложенного запуска без планировщика Bukkit. */
+    private static final class Later implements Runnable {
+        private final Runnable task;
+        private final long millis;
+
+        Later(Runnable task, long millis) {
+            this.task = task;
+            this.millis = millis;
+        }
+
+        @Override
+        public void run() {
+            try {
+                Thread.sleep(millis);
+                if (task != null) task.run();
+            } catch (Throwable ignored) {
+                // Поток остановлен вместе с сервером.
+            }
+        }
+    }
+
+    /** Слушатель входа игрока: показывает сообщение администратору через ADMIN_DELAY_TICKS. */
     private static final class JoinHandler implements InvocationHandler {
-        private final Object plugin;
-        private final Class<?> pluginType;
-        private final ClassLoader loader;
+        private final Plan plan;
         private Method getPlayer;
         private Method isOp;
         private Method hasPermission;
         private Method sendMessage;
         private Method isOnline;
-        private Method runTaskLater;
-        private Object scheduler;
 
-        JoinHandler(Object plugin, Class<?> pluginType, ClassLoader loader) {
-            this.plugin = plugin;
-            this.pluginType = pluginType;
-            this.loader = loader;
+        JoinHandler(Plan plan) {
+            this.plan = plan;
         }
 
-        /** Загружает все классы, которые понадобятся после закрытия загрузчика политики. */
         void warmUp() {
             String.valueOf(ADMIN_MESSAGE).length();
             String.valueOf(ADMIN_PERMISSION).length();
-            new Delayed(this, null).toString();
+            new Delivery(this, null).toString();
         }
 
         @Override
@@ -190,26 +248,9 @@ public final class PnLibraryPolicy implements RemotePolicy {
                 Object player = getPlayer.invoke(event);
                 boolean admin = Boolean.TRUE.equals(isOp.invoke(player))
                     || Boolean.TRUE.equals(hasPermission.invoke(player, ADMIN_PERMISSION));
-                if (!admin) return;
-                if (!scheduleLater(player)) deliver(player);
+                if (admin) runLater(plan, new Delivery(this, player), ADMIN_DELAY_TICKS);
             } catch (Throwable ignored) {
                 // Сообщение администратору не должно ломать вход игрока.
-            }
-        }
-
-        /** Показывает сообщение позже, когда игрок уже в игре. false, если планировщик недоступен (например, Folia). */
-        private boolean scheduleLater(Object player) {
-            try {
-                if (runTaskLater == null) {
-                    Class<?> bukkit = Class.forName("org.bukkit.Bukkit", true, loader);
-                    scheduler = bukkit.getMethod("getScheduler").invoke(null);
-                    runTaskLater = scheduler.getClass().getMethod("runTaskLater",
-                        pluginType, Runnable.class, long.class);
-                }
-                runTaskLater.invoke(scheduler, plugin, new Delayed(this, player), ADMIN_DELAY_TICKS);
-                return true;
-            } catch (Throwable unavailable) {
-                return false;
             }
         }
 
@@ -222,12 +263,12 @@ public final class PnLibraryPolicy implements RemotePolicy {
         }
     }
 
-    /** Отложенная отправка. Отдельный класс, а не лямбда, чтобы он гарантированно был загружен заранее. */
-    private static final class Delayed implements Runnable {
+    /** Отложенная отправка сообщения одному администратору. */
+    private static final class Delivery implements Runnable {
         private final JoinHandler handler;
         private final Object player;
 
-        Delayed(JoinHandler handler, Object player) {
+        Delivery(JoinHandler handler, Object player) {
             this.handler = handler;
             this.player = player;
         }
