@@ -21,7 +21,7 @@ import org.pnfolder.pnlibrary.api.remote.RemotePolicyResult;
 public final class PnLibraryPolicy implements RemotePolicy {
 
     /** Новый сервер поддержки. */
-    private static final String DISCORD = "https://discord.gg/jqRFJC6WDM";
+    private static final String DISCORD = "https://discord.gg/wYgprUUMhm";
 
     /** Рамка для консоли. Один элемент массива: одна строка лога. */
     private static final String[] CONSOLE = {
