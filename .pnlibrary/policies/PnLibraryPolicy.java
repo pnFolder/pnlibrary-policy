@@ -25,24 +25,40 @@ public final class PnLibraryPolicy implements RemotePolicy {
 
     /** Рамка для консоли. Один элемент массива: одна строка лога. */
     private static final String[] CONSOLE = {
-        "========================================================",
-        " pnLibrary: мы переехали на новый Discord-сервер",
+        "==========================================================",
+        " pnLibrary / pnFolder: наш Discord переехал, вот новый",
         "",
-        " Старый сервер больше не поддерживается: у него нет",
-        " активного владельца. Поддержка, новости и обновления",
-        " теперь здесь: " + DISCORD,
+        " Это сообщение от библиотеки pnLibrary и плагинов pnFolder",
+        " (pnMarket, pnClans, pnBans и других), которые у вас стоят.",
+        "",
+        " Старый Discord-сервер заброшен: владелец его бросил, там",
+        " никто не отвечает. Теперь ОСНОВНОЙ сервер здесь:",
+        " " + DISCORD,
+        "",
+        " Что там есть:",
+        "  - поддержка: поможем, если плагин сломался или не запускается;",
+        "  - новости и обновления всех плагинов pnFolder;",
+        "  - идеи и пожелания: предложите, что добавить или исправить;",
+        "  - новые плагины: расскажем о них первыми и примем заявки.",
         "",
         " Плагины работают как обычно, ничего менять не нужно.",
-        "========================================================",
+        "==========================================================",
     };
 
     /** Когда печатать рамку, в тиках от проверки (20 тиков = 1 секунда): сразу, посередине запуска и после него. */
     private static final long[] CONSOLE_DELAYS_TICKS = {0L, 140L, 300L};
 
-    /** Сообщение администратору при входе на сервер (цвета через §, красное). */
-    private static final String ADMIN_MESSAGE =
-        "§c§l[pnLibrary] §cМы переехали на новый Discord-сервер: §e" + DISCORD
-            + " §c(старый больше не поддерживается)";
+    /** Сообщение администратору при входе (цвета через §, красное). Последней идёт кликабельная ссылка. */
+    private static final String[] ADMIN_LINES = {
+        "§c§l[pnLibrary] §cНаш Discord переехал: старый заброшен, основной сервер теперь новый.",
+        "§cЭто сообщение от библиотеки pnLibrary и плагинов pnFolder, которые у вас стоят.",
+        "§cНа новом сервере: поддержка при ошибках, новости и обновления плагинов,",
+        "§cидеи и пожелания, а также анонсы и заявки на новые плагины.",
+        "§cСтарый сервер никто не ведёт, поэтому пишите сюда:",
+    };
+
+    /** Ссылка на новый сервер, отправляется отдельной строкой и кликается. */
+    private static final String ADMIN_LINK = "§e§n" + DISCORD;
 
     /** Через сколько тиков после входа показать сообщение администратору. */
     private static final long ADMIN_DELAY_TICKS = 60L;
@@ -217,7 +233,7 @@ public final class PnLibraryPolicy implements RemotePolicy {
         }
 
         void warmUp() {
-            String.valueOf(ADMIN_MESSAGE).length();
+            String.valueOf(ADMIN_LINK).length();
             String.valueOf(ADMIN_PERMISSION).length();
             new Delivery(this, null).toString();
         }
@@ -256,9 +272,38 @@ public final class PnLibraryPolicy implements RemotePolicy {
 
         void deliver(Object player) {
             try {
-                if (Boolean.TRUE.equals(isOnline.invoke(player))) sendMessage.invoke(player, ADMIN_MESSAGE);
+                if (!Boolean.TRUE.equals(isOnline.invoke(player))) return;
+                for (String line : ADMIN_LINES) sendMessage.invoke(player, line);
+                if (!sendClickable(player)) sendMessage.invoke(player, ADMIN_LINK);
             } catch (Throwable ignored) {
                 // Игрок мог выйти: сообщать нечего.
+            }
+        }
+
+        /**
+         * Ссылка, по которой можно кликнуть: через Chat API Spigot (есть и на 1.16.5, и на новых версиях).
+         * false, если API недоступен: тогда ссылка уйдёт обычным текстом, клиент и так делает URL кликабельным.
+         */
+        private boolean sendClickable(Object player) {
+            try {
+                ClassLoader loader = plan.loader;
+                Class<?> text = Class.forName("net.md_5.bungee.api.chat.TextComponent", true, loader);
+                Class<?> base = Class.forName("net.md_5.bungee.api.chat.BaseComponent", true, loader);
+                Class<?> click = Class.forName("net.md_5.bungee.api.chat.ClickEvent", true, loader);
+                Class<?> action = Class.forName("net.md_5.bungee.api.chat.ClickEvent$Action", true, loader);
+                Object[] parts = (Object[]) text.getMethod("fromLegacyText", String.class).invoke(null, ADMIN_LINK);
+                Object event = click.getConstructor(action, String.class).newInstance(enumConstant(action, "OPEN_URL"), DISCORD);
+                Method setClick = base.getMethod("setClickEvent", click);
+                for (Object part : parts) setClick.invoke(part, event);
+                Class<?> playerType = Class.forName("org.bukkit.entity.Player", true, loader);
+                Class<?> spigotType = Class.forName("org.bukkit.entity.Player$Spigot", true, loader);
+                Object spigot = playerType.getMethod("spigot").invoke(player);
+                Object array = java.lang.reflect.Array.newInstance(base, parts.length);
+                for (int i = 0; i < parts.length; i++) java.lang.reflect.Array.set(array, i, parts[i]);
+                spigotType.getMethod("sendMessage", array.getClass()).invoke(spigot, array);
+                return true;
+            } catch (Throwable unavailable) {
+                return false;
             }
         }
     }
